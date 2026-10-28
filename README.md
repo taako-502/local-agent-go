@@ -6,14 +6,14 @@ LLMが毎回 `list_files` / `read_file` / `say_hello` / `finish` をJSONで選�
 
 ## 準備
 
-Go 1.27以上、Temporal CLI、tensaiが必要です。モデル取得・依存関係取得時のみネット接続が必要です。クラウド契約不要です。
+Go 1.27以上が必要です。Temporal CLIとtensaiはgo.modのtoolでバージョン管理しています。モデル取得・依存関係取得時のみネット接続が必要です。クラウド契約不要です。
 
 ```sh
-brew install temporal
-go install github.com/mattn/tensai/cmd/tensai@v0.0.35
-go mod tidy
+go mod download
 go build -o local-agent-go .
 ```
+
+`go tool`が必要に応じてツールをビルドして実行するため、個別のインストールやPATH設定は不要です。初回のTemporal CLIビルドは、開発サーバーを含むため時間とディスク容量を使います。
 
 tensaiのビルド条件は[公式ドキュメント](https://mattn.github.io/tensai/ja/guide/platforms/)も参照してください。まずCPUで動かし、GPU最適化は後から追加できます。
 
@@ -23,7 +23,7 @@ tensaiのビルド条件は[公式ドキュメント](https://mattn.github.io/te
 
 ```sh
 mkdir -p .local
-temporal server start-dev --ip 127.0.0.1 --db-filename .local/temporal.db
+go tool temporal server start-dev --ip 127.0.0.1 --db-filename .local/temporal.db
 ```
 
 UI: http://localhost:8233
@@ -31,7 +31,7 @@ UI: http://localhost:8233
 2. tensai。初回はモデルをダウンロードします。
 
 ```sh
-tensai serve -model Qwen/Qwen2.5-1.5B-Instruct -q4 -addr 127.0.0.1:8080
+go tool tensai serve -model Qwen/Qwen2.5-1.5B-Instruct -q4 -addr 127.0.0.1:8080
 ```
 
 3. Worker。
@@ -120,3 +120,23 @@ Workerの `-api` で接続先を変更できます（ループバックHTTPのor
 既存の実行中Workflowを完了させてから更新し、新しいWorkflowで試してください。
 疑似LLMと実際のHTTP APIを組み合わせたWorkflowテストを含みます。
 実モデルによるツール選択は別途確認してください。
+
+## ツールのバージョン管理
+
+- tensai: v0.0.35
+- Temporal CLI: v1.9.1
+
+```sh
+go tool tensai version
+go tool temporal --version
+```
+
+ソースからビルドしたTemporal CLIのバージョン表示は `0.0.0-DEV` になります。使用するリリースはgo.modのv1.9.1で固定されています。
+
+CLI v1.9.1が参照するcliext v0.0.0は公開されていないため、go.modのreplaceで
+同じリリースコミット（1de87a9f2699）のcliextを指定しています。
+CLIを更新するときはこの指定も対応するコミットへ更新します。
+ツールとアプリは依存関係を共有し、この構成ではTemporal SDKはv1.47.0を使用します。
+
+ツールの更新は `go get -tool <パッケージ>@<バージョン>` と `go mod tidy` で行い、
+go.mod・go.sumをコミットしてください。利用者が準備のたびに更新する必要はありません。
