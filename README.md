@@ -1,14 +1,14 @@
 # local-agent-go
 
-ローカルLLM（mattn/tensai）とTemporalで、指定フォルダの資料を調べるGo製AIエージェント。
+ローカルLLMとTemporalで、指定フォルダの資料を調べるGo製AIエージェント。
 
-Goが資料ルートの一覧を渡し、LLMが毎回 `list_files` / `read_file` / `say_hello` / `finish` をJSONで選択します。Goがツールを実行し、その結果を次の判断に渡します。読む資料の順序や回答はLLMが選びます。ネイティブtool_callsではなく、学習しやすいJSONアクション方式です。
+Goが資料ルートの一覧を渡し、LLMが毎回 `list_files` / `read_file` / `say_hello` / `finish` をJSONで選択します。Goがツールを実行し、その結果を次の判断に渡します。読む資料の順序はLLMが選びます。取得済みの操作を再選択した場合、`finish` を選んだ場合、調査回数の上限に達した場合は調査を終え、別のLLM呼び出しで文章の回答を生成します。ネイティブtool_callsではなく、学習しやすいJSONアクション方式です。
 
 Goコードとテストは `cmd/local-agent-go/` に配置しています。以下のコマンドはリポジトリ直下で実行してください。
 
 ## 準備
 
-Go 1.27以上が必要です。Temporal CLIとtensaiはgo.modのtoolでバージョン管理しています。モデル取得・依存関係取得時のみネット接続が必要です。クラウド契約不要です。
+Go 1.27以上が必要です。Temporal CLIはgo.modのtoolでバージョン管理しています。検証構成はApple Silicon Mac・llama.cpp・Qwen2.5-3B-Instruct Q4_K_Mです。モデル取得・依存関係取得時のみネット接続が必要です。クラウド契約不要です。
 
 ```sh
 go mod download
@@ -17,7 +17,11 @@ go build -o local-agent-go ./cmd/local-agent-go
 
 `go tool`が必要に応じてツールをビルドして実行するため、個別のインストールやPATH設定は不要です。初回のTemporal CLIビルドは、開発サーバーを含むため時間とディスク容量を使います。
 
-tensaiのビルド条件は[公式ドキュメント](https://mattn.github.io/tensai/ja/guide/platforms/)も参照してください。まずCPUで動かし、GPU最適化は後から追加できます。
+Macでは[llama.cpp](https://github.com/ggml-org/llama.cpp)を別途インストールします。GoアプリからはOpenAI互換のローカルHTTP APIを呼びます。
+
+```sh
+brew install llama.cpp
+```
 
 ## 起動（リポジトリ直下で別々のターミナル）
 
@@ -30,13 +34,18 @@ go tool temporal server start-dev --ip 127.0.0.1 --db-filename .local/temporal.d
 
 UI: http://localhost:8233
 
-2. tensai。初回はモデルをダウンロードします。
+2. LLMサーバー。Metalを利用し、同時推論は1件にします。初回は約2GBのモデルを取得します。
 
 ```sh
-go tool tensai serve -model Qwen/Qwen2.5-3B-Instruct-GGUF/qwen2.5-3b-instruct-q4_k_m.gguf -addr 127.0.0.1:8080
+llama-server -hf Qwen/Qwen2.5-3B-Instruct-GGUF \
+  -hff qwen2.5-3b-instruct-q4_k_m.gguf \
+  --alias local-agent --host 127.0.0.1 --port 8080 \
+  -ngl 99 -c 8192 --parallel 1
 ```
 
-既定は[Qwen2.5-3B-InstructのGGUF版](https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF)です。取得サイズは約2GBです。1.5Bモデルでは操作の選択が不安定だったため、この構成でサンプル資料の質問への回答を確認しています。モデルを変える場合はWorkerの `-model` も合わせてください。
+同じGGUFが手元にあれば、`-hf` と `-hff` の代わりに `-m /path/to/model.gguf` を指定できます。以前tensaiで取得したMac上のモデルは、例えば `-m "$HOME/Library/Caches/tensai/qwen2.5-3b-instruct-q4_k_m.gguf"` で再利用できます。8080で別のLLMサーバーが動いていれば、先にそのサーバーを停止してください。
+
+`--alias local-agent` がWorkerの既定の `-model local-agent` に対応します。別の互換サーバーを使う場合は `-llm` と `-model` を合わせてください。操作JSONの生成には `response_format: json_schema` を送信します。今回の実モデル検証はllama.cppで行い、tensaiのCPU実行で同じ速度・品質を保証するものではありません。
 
 3. Worker。
 
@@ -52,7 +61,7 @@ go tool tensai serve -model Qwen/Qwen2.5-3B-Instruct-GGUF/qwen2.5-3b-instruct-q4
 
 `examples/docs` は、調査対象として用意した架空のプロジェクト「社内資料管理API」の資料です。資料中のPostgreSQL・マイグレーション・APIはこのリポジトリには実装していません。エージェントを試すために社内資料管理APIを起動する必要はありません。
 
-質問CLIは10秒ごとに待機時間を表示します。実行状況はWorkerのログとTemporal UIで確認できます。
+質問CLIは10秒ごとに経過時間と「調査中」「資料取得中」「回答生成中」などの段階を表示します。Activityが再試行されている場合は試行回数も表示します。進行状況を取得できない場合はその旨を表示し、回答待ちは継続します。
 
 期待する内容は、社内資料管理APIのPostgreSQL起動→マイグレーション→API起動、9090番ポートの /healthz、出典 setup.md です。実際の回答はモデル次第です。小型モデルがJSONを守れない場合は、同じモデルファミリーの大きなInstructモデルを使い、Workerの -model も合わせてください。
 
@@ -70,11 +79,14 @@ Workerのログにツールの選択が出た後、Temporal UIでActivity完了�
 
 Server再起動時も同じDBファイルを指定してください。各実験には新しいIDを使います。Workflowコードの変更は既存履歴との互換性を考慮する必要があるため、最初は実行完了後に変更してください。
 
+更新後はWorkerを再起動し、新しい質問を実行してください。更新前に開始したWorkflowは履歴の互換性を保つため従来の処理を続けます。既存のループを新しい処理に切り替えるものではありません。
+
 ## 実装と制限
 
-- `Investigate`: 決定論的なWorkflow。LLM判断は既定で最大10回、`-steps` で1〜20回に設定できます。最終回答の `finish` も1回に数え、上限内に到達しなければエラーになります。
-- `Activities.Decide`: ローカルLLMへのHTTP呼び出し。Activityは初回を含め最大3回実行し、再試行不可のエラーでは打ち切ります。
-- 応答全体を囲むJSONのコード枠は取り除いて検証します。複数アクションなどの形式違反や調査前の回答には、その出力と修正指示をLLMに返します。1回のDecide内で初回を含め最大3回・合計4分まで試し、修正できなかった場合はActivityの自動再試行も打ち切ります。通信障害などはTemporalの再試行対象です。
+- `Investigate`: 決定論的なWorkflow。LLM判断は既定で最大10回、`-steps` で1〜20回に設定できます。調査終了の `finish` も1回に数えます。取得済み操作の再選択または回数上限で回答生成へ進みます。成功した操作だけを記録し、根拠を1件も取得できなければエラーになります。
+- `Activities.Plan`: 質問と観測結果をまとめて渡し、共通のツール一覧からLLMが次の操作を選びます。質問のキーワードによる分岐はありません。ツール名・引数・ファイルパス・API接続先はGo側でも検証します。
+- 応答全体を囲むJSONのコード枠は取り除いて検証します。複数アクションなどの形式違反や調査前の回答には、その出力と修正指示をLLMに返します。1回のPlan内で初回を含め最大2回・合計90秒まで試し、修正できなかった場合はActivityの自動再試行も打ち切ります。通信障害などはTemporalの再試行対象です。
+- `Activities.Answer`: 質問と取得済みの根拠だけを渡し、操作JSONではなく文章を生成します。HTTP要求は最大2分・1回のみです。Temporal側は実行130秒・待機込み150秒とし、HTTP側のエラーが先に返る余裕を設けます。失敗時は取得済みの資料・ツール一覧を含むエラーで終了し、生成失敗を成功として返しません。調査には戻りません。
 - `Activities.Read`: os.Rootに制限された読み取り専用ツール。
 - .md/.txt（UTF-8）、1ファイル8 KiB以下、1ディレクトリ200エントリ以下。
 - 隠しパス・シンボリックリンク・ルート外アクセスは拒否。専用の資料フォルダを指定してください。
@@ -91,12 +103,18 @@ go test ./...
 go vet ./...
 ```
 
-実モデルでの回答品質とWorker停止・再起動は、上記手順で別途確認してください。
+実際のTemporal・LLM・Worker・sample-apiを起動した状態で、次のテストを実行できます。資料のみ・APIのみ・複合依頼を順番に実行し、回答の主要な事実と実際に呼び出したActivityを検証します。通常の `go test` ではスキップします。
+
+```sh
+LOCAL_AGENT_LIVE=1 go test ./cmd/local-agent-go -run '^TestLiveAgent$' -v -count=1
+```
+
+検証Workerを別のキューで起動した場合は `LOCAL_AGENT_QUEUE` にそのキュー名を指定します。小型モデルの一般的な回答精度を保証するテストではありません。Worker停止・再起動は上記手順で別途確認してください。
 
 ## Hello World APIを呼ぶサンプル
 
 `say_hello` は実装済みのエージェント用ツール名で、HTTPの `GET /hello` を呼び出します。
-`say_hello` の成功結果に空でない `message` があれば、その内容を直接返して完了します。API実行後の回答生成にはLLMを呼びません。通信失敗やAPIエラーを成功として扱うことはありません。
+資料ツールと同様にLLMが選択し、実行結果を次の判断と最終回答へ渡します。挨拶APIの成功だけで終了しないため、資料と組み合わせる依頼にも同じ処理で対応します。
 
 追加のターミナルでAPIを起動します。DBは不要です。
 
@@ -112,7 +130,7 @@ curl http://127.0.0.1:8090/hello
 # {"message":"Hello, World!"}
 ```
 
-Temporalとtensaiを起動した状態で、Workerを新しいバイナリで起動し直します。
+TemporalとLLMサーバーを起動した状態で、Workerを新しいバイナリで起動し直します。
 
 ```sh
 ./local-agent-go -mode worker -docs ./examples/docs
@@ -125,20 +143,28 @@ Temporalとtensaiを起動した状態で、Workerを新しいバイナリで起
 ```
 
 LLMが `{"action":"say_hello"}` を選ぶと、GoのActivityが `GET /hello` を呼び、
-取得結果をLLMへ渡して回答します。WorkerログとTemporal UIでDecide→SayHello→Decideを確認できます。
+取得結果をLLMの次の判断に渡します。WorkerログとTemporal UIでPlan→SayHello→Plan→Answerを確認できます。
+
+```sh
+./local-agent-go -question '挨拶APIを呼んで、資料の内容と合わせて説明して'
+```
+
+複合依頼ではSayHelloとReadの両方を実行し、その結果をAnswerがまとめます。
 Workerの `-api` で接続先を変更できます（ループバックHTTPのoriginのみ）。
 接続失敗・429・5xxは再試行対象、その他のHTTPエラーはLLMに観測結果として返します。
 
 既存の実行中Workflowを完了させてから更新し、新しいWorkflowで試してください。
 疑似LLMと実際のHTTP APIを組み合わせたWorkflowテストを含みます。
-実モデルによるツール選択は別途確認してください。
+実モデルによる検証には上記の `TestLiveAgent` を使います。
 
 ## ツールのバージョン管理
 
-- tensai: v0.0.35
+- llama.cpp: 検証時 Homebrew 0.7.0（`llama-server --version` で確認）
+- tensai: v0.0.35（旧構成を再現するためGo toolとして残しています）
 - Temporal CLI: v1.9.1
 
 ```sh
+llama-server --version
 go tool tensai version
 go tool temporal --version
 ```

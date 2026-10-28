@@ -76,7 +76,9 @@ func TestAPIWorkflow(t *testing.T) {
 			defer llm.Close()
 			var suite testsuite.WorkflowTestSuite
 			env := suite.NewTestWorkflowEnvironment()
+			env.OnGetVersion("common-tools", workflow.DefaultVersion, 1).Return(workflow.DefaultVersion)
 			if emptyAnswer {
+				env.OnGetVersion("separate-answer", workflow.DefaultVersion, 1).Return(workflow.DefaultVersion)
 				env.OnGetVersion("hello-direct-result", workflow.DefaultVersion, 1).Return(workflow.DefaultVersion)
 			}
 			env.RegisterActivity(&Activities{Root: root, Endpoint: llm.URL, APIBase: api.URL, Model: "test"})

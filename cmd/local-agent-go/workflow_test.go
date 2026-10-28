@@ -6,12 +6,14 @@ import (
 
 	"github.com/stretchr/testify/mock"
 	"go.temporal.io/sdk/testsuite"
+	"go.temporal.io/sdk/workflow"
 )
 
 // TestAgentLoop は資料の読み取り結果を経てWorkflowが最終回答を返すことを確認します。
 func TestAgentLoop(t *testing.T) {
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()
+	env.OnGetVersion("separate-answer", workflow.DefaultVersion, 1).Return(workflow.DefaultVersion)
 	a := &Activities{}
 	env.OnActivity(a.Decide, mock.Anything, mock.Anything).Return(func(context.Context, []Message) (Decision, error) {
 		return Decision{Action: "read_file", Path: "setup.md"}, nil
@@ -33,6 +35,7 @@ func TestAgentLoop(t *testing.T) {
 func TestStepLimit(t *testing.T) {
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()
+	env.OnGetVersion("separate-answer", workflow.DefaultVersion, 1).Return(workflow.DefaultVersion)
 	a := &Activities{}
 	env.OnActivity(a.Decide, mock.Anything, mock.Anything).Return(Decision{Action: "list_files", Path: "."}, nil)
 	env.OnActivity(a.Read, mock.Anything, mock.Anything).Return("[]", nil)

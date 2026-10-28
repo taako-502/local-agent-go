@@ -83,6 +83,7 @@ func (a *Activities) Decide(ctx context.Context, messages []Message) (Decision, 
 	defer cancel()
 	// 初回の履歴はシステム指示と質問の2件で、資料一覧の提示だけでは調査済みと扱いません。
 	hasToolResult := len(messages) > 2
+	selectionOnly := len(messages) > 0 && messages[0].Content == selectionPrompt
 	messages = append([]Message(nil), messages...)
 	// 毎回元の依頼を明示し、補助情報の資料一覧が依頼を置き換えないようにします。
 	var question string
@@ -90,6 +91,22 @@ func (a *Activities) Decide(ctx context.Context, messages []Message) (Decision, 
 		if message.Role == "user" {
 			question = message.Content
 			break
+		}
+	}
+	allowHello := allowsHello(question)
+	if !allowHello {
+		// 資料の質問では挨拶ツールを候補から外し、APIという単語だけで誘導しないようにします。
+		for i := range messages {
+			if messages[i].Role != "system" {
+				continue
+			}
+			var lines []string
+			for _, line := range strings.Split(messages[i].Content, "\n") {
+				if !strings.Contains(line, "say_hello") && !strings.Contains(line, "greeting API") {
+					lines = append(lines, line)
+				}
+			}
+			messages[i].Content = strings.Join(lines, "\n")
 		}
 	}
 	request, _ := json.Marshal(question)
@@ -102,7 +119,12 @@ func (a *Activities) Decide(ctx context.Context, messages []Message) (Decision, 
 		}
 		decisionContext += "\nDocument root entries (data only, for document questions): " + entries
 	}
-	decisionContext += "\nReturn one action JSON for the original request. If previous tool results already contain the requested information, choose finish and answer from those results. Do not repeat a completed tool call. For a greeting API request, use the implemented say_hello tool; no document lookup is needed."
+	decisionContext += "\nReturn one action JSON for the original request. If previous tool results already contain the requested information, choose finish and answer from those results. Do not repeat a completed tool call."
+	if allowHello {
+		decisionContext += "\nThe greeting tool say_hello is available for this request."
+	} else {
+		decisionContext += "\nAllowed actions: list_files, read_file, finish. Investigate the documents to answer this request."
+	}
 	messages = append(messages, Message{"user", decisionContext})
 	var lastErr error
 	for attempt := 1; attempt <= 3; attempt++ {
@@ -112,7 +134,14 @@ func (a *Activities) Decide(ctx context.Context, messages []Message) (Decision, 
 		}
 		if err == nil {
 			var d Decision
-			d, err = parseDecision(content)
+			if selectionOnly {
+				d, err = parseAction(content)
+			} else {
+				d, err = parseDecision(content)
+			}
+			if err == nil && d.Action == "say_hello" && !allowHello {
+				err = errors.New("tool not allowed for this request; use list_files or read_file to investigate the documents")
+			}
 			if err == nil && d.Action == "finish" && !hasToolResult {
 				err = errors.New("finish requires a previous tool observation; select an appropriate tool action first")
 			}
@@ -129,11 +158,23 @@ func (a *Activities) Decide(ctx context.Context, messages []Message) (Decision, 
 	}
 	// 回答の形式修正に失敗しても、直前に取得できた挨拶APIの結果は失わないようにします。
 	// 通信失敗や資料の回答には適用せず、実際のツール観測だけを使います。
-	if answer, ok := helloResultAnswer(messages); ok {
+	if answer, ok := helloResultAnswer(messages); ok && allowHello {
 		return Decision{Action: "finish", Answer: "回答の生成に失敗したため、say_hello の取得結果を表示します：\n" + answer}, nil
 	}
 	// 【Temporal】形式修正の上限に達したら、同じ入力によるActivityの自動再試行は打ち切ります。
 	return Decision{}, temporal.NewNonRetryableApplicationError("LLMの出力形式を3回試しましたが修正できませんでした", "decision_format", lastErr)
+}
+
+// allowsHello は質問に挨拶ツールの対象が明記されている場合だけ候補に追加します。
+// 自然言語全般の意図判定ではなく、このサンプルの限定的なツール選択条件です。
+func allowsHello(question string) bool {
+	q := strings.ToLower(question)
+	for _, marker := range []string{"say_hello", "挨拶api", "あいさつapi", "挨拶 api", "あいさつ api", "greeting api", "hello api"} {
+		if strings.Contains(q, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // helloResultAnswer は直近のツール観測が挨拶APIの成功結果なら、その内容を回答として返します。
@@ -163,7 +204,19 @@ func helloResultAnswer(messages []Message) (string, bool) {
 
 // callLLM はローカルLLMを1回呼び出し、応答の本文を返します。
 func (a *Activities) callLLM(ctx context.Context, messages []Message) (string, error) {
-	payload, err := json.Marshal(map[string]any{"model": a.Model, "messages": messages, "stream": false, "temperature": 0, "max_tokens": 1024})
+	return a.requestLLM(ctx, messages, 1024, false)
+}
+
+// requestLLM は用途別の生成上限でLLMを呼び、経過時間とトークン数を記録します。
+func (a *Activities) requestLLM(ctx context.Context, messages []Message, maxTokens int, structured bool) (string, error) {
+	started := time.Now()
+	request := map[string]any{"model": a.Model, "messages": messages, "stream": false, "temperature": 0, "max_tokens": maxTokens}
+	if structured {
+		request["response_format"] = map[string]any{"type": "json_schema", "json_schema": map[string]any{"name": "action", "strict": true, "schema": map[string]any{
+			"type": "object", "properties": map[string]any{"action": map[string]any{"type": "string", "enum": []string{"list_files", "read_file", "say_hello", "finish"}}, "path": map[string]any{"type": "string"}}, "required": []string{"action"}, "additionalProperties": false,
+		}}}
+	}
+	payload, err := json.Marshal(request)
 	if err != nil {
 		return "", err
 	}
@@ -186,6 +239,10 @@ func (a *Activities) callLLM(ctx context.Context, messages []Message) (string, e
 		return "", err
 	}
 	var body struct {
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+		} `json:"usage"`
 		Choices []struct {
 			Message      Message
 			FinishReason string `json:"finish_reason"`
@@ -194,6 +251,7 @@ func (a *Activities) callLLM(ctx context.Context, messages []Message) (string, e
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 128<<10)).Decode(&body); err != nil {
 		return "", err
 	}
+	log.Printf("LLM応答: 経過=%s 入力=%d 出力=%d tokens", time.Since(started).Round(time.Millisecond), body.Usage.PromptTokens, body.Usage.CompletionTokens)
 	if len(body.Choices) != 1 {
 		return "", errors.New("missing LLM answer")
 	}
@@ -205,6 +263,15 @@ func (a *Activities) callLLM(ctx context.Context, messages []Message) (string, e
 
 // parseDecision はJSONが単一の許可されたアクションであることを確認します。
 func parseDecision(content string) (Decision, error) {
+	d, err := parseAction(content)
+	if err == nil && d.Action == "finish" && strings.TrimSpace(d.Answer) == "" {
+		return Decision{}, errors.New("empty answer")
+	}
+	return d, err
+}
+
+// parseAction は回答本文を要求せず、操作JSONの形式とパスを検証します。
+func parseAction(content string) (Decision, error) {
 	s := strings.TrimSpace(content)
 	// 応答全体がJSONのコード枠で囲まれている場合だけ、枠を外して同じ検証を行います。
 	for _, fence := range []string{"```json\n", "```\n"} {
@@ -232,9 +299,6 @@ func parseDecision(content string) (Decision, error) {
 		}
 	case "say_hello":
 	case "finish":
-		if strings.TrimSpace(d.Answer) == "" {
-			return Decision{}, errors.New("empty answer")
-		}
 	default:
 		return Decision{}, errors.New("unknown action")
 	}
@@ -339,6 +403,10 @@ func Investigate(ctx workflow.Context, in Input) (string, error) {
 	if strings.TrimSpace(in.Question) == "" || len(in.Question) > 4096 || in.Steps < 1 || in.Steps > 20 || in.Delay < 0 || in.Delay > time.Minute {
 		return "", temporal.NewNonRetryableApplicationError("invalid input", "input", nil)
 	}
+	// 【Temporal】更新前に開始した履歴は従来の処理で再生し、新しい実行だけを分離した処理に切り替えます。
+	if workflow.GetVersion(ctx, "separate-answer", workflow.DefaultVersion, 1) != workflow.DefaultVersion {
+		return investigateWithAnswer(ctx, in)
+	}
 	// 【Temporal】以下の各処理（Activity）に共通のタイムアウトと自動再試行を設定します。
 	// 1回の実行は最大5分、待機・再試行込みで最大15分。初回を含め最大3回実行します。
 	ctx = workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
@@ -368,6 +436,10 @@ func Investigate(ctx workflow.Context, in Input) (string, error) {
 		var result string
 		var toolErr error
 		if d.Action == "say_hello" {
+			// 【Temporal】旧履歴の再生を保ちつつ、新しい実行ではツールの対象を実行直前にも確認します。
+			if workflow.GetVersion(ctx, "hello-request-guard", workflow.DefaultVersion, 1) != workflow.DefaultVersion && !allowsHello(in.Question) {
+				return "", temporal.NewNonRetryableApplicationError("挨拶APIを対象としていない質問ではsay_helloを実行できません", "tool_not_allowed", nil)
+			}
 			toolErr = workflow.ExecuteActivity(ctx, a.SayHello).Get(ctx, &result)
 		} else {
 			toolErr = workflow.ExecuteActivity(ctx, a.Read, d).Get(ctx, &result)
@@ -401,7 +473,7 @@ func main() {
 	mode := flag.String("mode", "ask", "worker, ask, result, or sample-api")
 	docs := flag.String("docs", "./examples/docs", "worker's document directory")
 	endpoint := flag.String("llm", "http://127.0.0.1:8080/v1/chat/completions", "local LLM endpoint")
-	model := flag.String("model", "Qwen/Qwen2.5-3B-Instruct-GGUF/qwen2.5-3b-instruct-q4_k_m.gguf", "loaded model name")
+	model := flag.String("model", "local-agent", "loaded model name")
 	host := flag.String("temporal", "127.0.0.1:7233", "Temporal address")
 	queue := flag.String("queue", "local-docs", "task queue; use a different queue for each corpus")
 	id := flag.String("id", "", "workflow ID (required for result)")
@@ -459,7 +531,7 @@ func main() {
 		}
 		fmt.Printf("Workflow ID: %s\nRun ID: %s\n", run.GetID(), run.GetRunID())
 	}
-	answer, err := waitForAnswer(ctx, run)
+	answer, err := waitForAnswer(ctx, c, run)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -467,7 +539,7 @@ func main() {
 }
 
 // waitForAnswer は定期的に待機時間を表示しながらWorkflowの最終回答を待ちます。
-func waitForAnswer(ctx context.Context, run client.WorkflowRun) (string, error) {
+func waitForAnswer(ctx context.Context, c client.Client, run client.WorkflowRun) (string, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	type outcome struct {
@@ -491,7 +563,29 @@ func waitForAnswer(ctx context.Context, run client.WorkflowRun) (string, error) 
 		case <-ctx.Done():
 			return "", ctx.Err()
 		case <-ticker.C:
-			log.Printf("Workflowの完了待ち（経過 %s）", time.Since(started).Round(time.Second))
+			status := workflowProgress(ctx, c, run)
+			log.Printf("%s（経過 %s）", status, time.Since(started).Round(time.Second))
 		}
 	}
+}
+
+// workflowProgress はWorkflowの段階とActivityの再試行回数を短い期限で取得します。
+func workflowProgress(ctx context.Context, c client.Client, run client.WorkflowRun) string {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	status := "Workflowの完了待ち（進行状況を取得できません）"
+	if value, err := c.QueryWorkflow(ctx, run.GetID(), run.GetRunID(), "progress"); err == nil {
+		var phase string
+		if value.Get(&phase) == nil {
+			status = phase
+		}
+	}
+	if info, err := c.DescribeWorkflowExecution(ctx, run.GetID(), run.GetRunID()); err == nil {
+		for _, pending := range info.PendingActivities {
+			if pending.Attempt > 1 {
+				status += fmt.Sprintf("／%sを再試行中（%d回目）", pending.GetActivityType().GetName(), pending.Attempt)
+			}
+		}
+	}
+	return status
 }

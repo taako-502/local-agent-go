@@ -185,3 +185,23 @@ func TestHelloResultAnswer(t *testing.T) {
 		})
 	}
 }
+
+// TestAllowsHello は一般のAPI質問と挨拶APIを対象にした質問を区別することを確認します。
+func TestAllowsHello(t *testing.T) {
+	for _, tc := range []struct {
+		question string
+		want     bool
+	}{
+		{"資料に書かれた社内資料管理APIの起動手順とヘルスチェック方法を教えて", false},
+		{"APIを呼んで", false},
+		{"資料を要約して", false},
+		{"say_helloで挨拶APIを呼んで、返ってきたメッセージを教えて", true},
+		{"挨拶APIを呼んで、資料の内容と合わせて説明して", true},
+		{"あいさつAPIを呼んで", true},
+		{"Call the greeting API", true},
+	} {
+		if got := allowsHello(tc.question); got != tc.want {
+			t.Errorf("%q: got %v, want %v", tc.question, got, tc.want)
+		}
+	}
+}
