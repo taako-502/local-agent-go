@@ -178,3 +178,7 @@ CLIを更新するときはこの指定も対応するコミットへ更新し�
 
 ツールの更新は `go get -tool <パッケージ>@<バージョン>` と `go mod tidy` で行い、
 go.mod・go.sumをコミットしてください。利用者が準備のたびに更新する必要はありません。
+
+## 記事
+
+https://ap-ep.com/go-local-llm-agent-temporal/
