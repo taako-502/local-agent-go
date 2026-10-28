@@ -2,7 +2,7 @@
 
 ローカルLLM（mattn/tensai）とTemporalで、指定フォルダの資料を調べるGo製AIエージェント。
 
-LLMが毎回 `list_files` / `read_file` / `finish` をJSONで選択します。Goがツールを実行し、その結果を次の判断に渡します。固定の検索順序や模擬回答は使いません。ネイティブtool_callsではなく、学習しやすいJSONアクション方式です。
+LLMが毎回 `list_files` / `read_file` / `get_order` / `finish` をJSONで選択します。Goがツールを実行し、その結果を次の判断に渡します。固定の検索順序や模擬回答は使いません。ネイティブtool_callsではなく、学習しやすいJSONアクション方式です。
 
 ## 準備
 
@@ -83,3 +83,37 @@ go vet ./...
 ```
 
 実モデルでの回答品質とWorker停止・再起動は、上記手順で別途確認してください。
+
+## ローカルAPIを呼ぶサンプル
+
+追加のターミナルで注文APIを起動します（Temporalへの接続は不要）。
+
+```sh
+go build -o local-agent-go .
+./local-agent-go -mode sample-api
+```
+
+既存のWorkerを停止して新しいバイナリで起動し、新しいWorkflowとして質問します。
+
+```sh
+./local-agent-go -mode worker -docs ./examples/docs
+./local-agent-go -question '注文ORD-001の配送状況と到着予定日を調べて'
+```
+
+LLMが `{"action":"get_order","order_id":"ORD-001"}` を選択すると、Activityが
+`GET http://127.0.0.1:8090/orders/ORD-001` を実際に呼びます。結果を受けたLLMが回答します。
+架空の注文データは、ORD-001が発送済み（shipped）、キーボード1個、到着予定2026-11-02、
+ORD-002が処理中（processing）、モニター2個、到着予定2026-11-05です。
+存在しないIDは404になり、その結果もLLMへ返します。
+
+WorkerログとTemporal UIでDecide→GetOrder→Decideを確認できます。
+API単体は `curl http://127.0.0.1:8090/orders/ORD-001` でも確認できます。
+Workerの `-api` で接続先ポートを変更できます（HTTPのループバックoriginのみ）。
+接続失敗・429・5xxはActivityの再試行対象、その他のHTTPエラーはツールの観測結果として返します。
+
+これはREST GETの例です。GraphQLや更新操作は未実装です。
+APIのURL・HTTPメソッド・認証情報をLLMへ任せず、Go側の業務ツールとして実装する構成です。
+既存の実行中Workflowは完了させてからWorkerを更新してください（プロンプトと観測形式を変更しています）。
+
+テストには、疑似LLM HTTPサーバーと実際のサンプルAPIを組み合わせたWorkflowテストを含みます。
+実モデルが適切なツールを選べるかは上の質問で確認してください。
