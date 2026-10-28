@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-// SayHello calls the local Hello World API.
+// SayHello はローカルのHello World APIを呼び出し、JSONレスポンスを返します。
 func (a *Activities) SayHello(ctx context.Context) (string, error) {
 	u, err := url.Parse(a.APIBase)
 	if err != nil || u.Scheme != "http" || u.User != nil || (u.Hostname() != "127.0.0.1" && u.Hostname() != "localhost" && u.Hostname() != "::1") || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
@@ -44,6 +44,7 @@ func (a *Activities) SayHello(ctx context.Context) (string, error) {
 	return string(b), nil
 }
 
+// sampleAPI はGET /helloに挨拶のJSONを返すHTTPハンドラーを作成します。
 func sampleAPI() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /hello", func(w http.ResponseWriter, r *http.Request) {

@@ -12,6 +12,7 @@ import (
 	"go.temporal.io/sdk/testsuite"
 )
 
+// TestAPIWorkflow は疑似LLMとHTTP APIを使い、APIの結果が最終回答まで渡ることを確認します。
 func TestAPIWorkflow(t *testing.T) {
 	api := httptest.NewServer(sampleAPI())
 	defer api.Close()
@@ -51,6 +52,7 @@ func TestAPIWorkflow(t *testing.T) {
 	}
 }
 
+// TestAPIResponses はHTTPステータスに応じた結果の扱いと外部接続先の拒否を確認します。
 func TestAPIResponses(t *testing.T) {
 	for _, status := range []int{200, 404, 429, 503} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
