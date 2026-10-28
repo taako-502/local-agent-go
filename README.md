@@ -6,7 +6,7 @@ LLMが毎回 `list_files` / `read_file` / `finish` をJSONで選択します。G
 
 ## 準備
 
-Go 1.25以上、Temporal CLI、tensaiが必要です。モデル取得・依存関係取得時のみネット接続が必要です。クラウド契約不要です。
+Go 1.27以上、Temporal CLI、tensaiが必要です。モデル取得・依存関係取得時のみネット接続が必要です。クラウド契約不要です。
 
 ```sh
 brew install temporal

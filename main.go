@@ -122,7 +122,7 @@ func safePath(p string) bool {
 	if p == "." {
 		return true
 	}
-	for _, part := range strings.Split(p, "/") {
+	for part := range strings.SplitSeq(p, "/") {
 		if strings.HasPrefix(part, ".") {
 			return false
 		}
@@ -139,7 +139,7 @@ func (a *Activities) Read(ctx context.Context, d Decision) (string, error) {
 		return fail("invalid or hidden path")
 	}
 	current := ""
-	for _, part := range strings.Split(d.Path, "/") {
+	for part := range strings.SplitSeq(d.Path, "/") {
 		current = path.Join(current, part)
 		st, err := a.Root.Lstat(current)
 		if err != nil {
