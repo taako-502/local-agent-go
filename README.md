@@ -4,13 +4,15 @@
 
 LLMが毎回 `list_files` / `read_file` / `say_hello` / `finish` をJSONで選択します。Goがツールを実行し、その結果を次の判断に渡します。固定の検索順序や模擬回答は使いません。ネイティブtool_callsではなく、学習しやすいJSONアクション方式です。
 
+Goコードとテストは `cmd/local-agent-go/` に配置しています。以下のコマンドはリポジトリ直下で実行してください。
+
 ## 準備
 
 Go 1.27以上が必要です。Temporal CLIとtensaiはgo.modのtoolでバージョン管理しています。モデル取得・依存関係取得時のみネット接続が必要です。クラウド契約不要です。
 
 ```sh
 go mod download
-go build -o local-agent-go .
+go build -o local-agent-go ./cmd/local-agent-go
 ```
 
 `go tool`が必要に応じてツールをビルドして実行するため、個別のインストールやPATH設定は不要です。初回のTemporal CLIビルドは、開発サーバーを含むため時間とディスク容量を使います。
@@ -46,12 +48,14 @@ go tool tensai serve -model Qwen/Qwen2.5-1.5B-Instruct -q4 -addr 127.0.0.1:8080
 ./local-agent-go -question 'このプロジェクトの起動手順とヘルスチェック方法を教えて'
 ```
 
-期待する内容は、PostgreSQL起動→マイグレーション→API起動、9090番ポートの /healthz、出典 setup.md です。実際の回答はモデル次第です。小型モデルがJSONを守れない場合は、同じモデルファミリーの大きなInstructモデルを使い、Workerの -model も合わせてください。
+`examples/docs` は、調査対象として用意した架空のプロジェクト「社内資料管理API」の資料です。資料中のPostgreSQL・マイグレーション・APIはこのリポジトリには実装していません。エージェントを試すために社内資料管理APIを起動する必要はありません。
+
+期待する内容は、社内資料管理APIのPostgreSQL起動→マイグレーション→API起動、9090番ポートの /healthz、出典 setup.md です。実際の回答はモデル次第です。小型モデルがJSONを守れない場合は、同じモデルファミリーの大きなInstructモデルを使い、Workerの -model も合わせてください。
 
 ## 復旧を試す
 
 ```sh
-./local-agent-go -id recovery-demo-1 -delay 30s -question 'Atlasの構成と起動方法は？'
+./local-agent-go -id recovery-demo-1 -delay 30s -question '社内資料管理APIの構成と起動方法は？'
 ```
 
 Workerのログにツールの選択が出た後、Temporal UIでActivity完了とTimer待機を確認してWorkerをCtrl+Cで止め、同じ引数で再起動します。完了記録のあるActivityの結果は再利用されます。途中だったActivityはタイムアウト後に再実行され得ます。質問CLIを止めてもWorkflowは残ります。
@@ -64,8 +68,8 @@ Server再起動時も同じDBファイルを指定してください。各実験
 
 ## 実装と制限
 
-- `Investigate`: 決定論的なWorkflow。LLM判断→ツール実行を最大10回繰り返します。
-- `Activities.Decide`: ローカルLLMへのHTTP呼び出し。最大3回再試行。
+- `Investigate`: 決定論的なWorkflow。LLM判断は既定で最大10回、`-steps` で1〜20回に設定できます。最終回答の `finish` も1回に数え、上限内に到達しなければエラーになります。
+- `Activities.Decide`: ローカルLLMへのHTTP呼び出し。Activityは初回を含め最大3回実行し、再試行不可のエラーでは打ち切ります。
 - `Activities.Read`: os.Rootに制限された読み取り専用ツール。
 - .md/.txt（UTF-8）、1ファイル8 KiB以下、1ディレクトリ200エントリ以下。
 - 隠しパス・シンボリックリンク・ルート外アクセスは拒否。専用の資料フォルダを指定してください。
@@ -89,7 +93,7 @@ go vet ./...
 追加のターミナルでAPIを起動します。DBは不要です。
 
 ```sh
-go build -o local-agent-go .
+go build -o local-agent-go ./cmd/local-agent-go
 ./local-agent-go -mode sample-api
 ```
 
