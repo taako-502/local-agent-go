@@ -12,7 +12,7 @@ import (
 	"go.temporal.io/sdk/testsuite"
 )
 
-// TestAPIWorkflow は疑似LLMとHTTP APIを使い、APIの結果が最終回答まで渡ることを確認します。
+// TestAPIWorkflow は形式修正を経て、HTTP APIの結果が最終回答まで渡ることを確認します。
 func TestAPIWorkflow(t *testing.T) {
 	api := httptest.NewServer(sampleAPI())
 	defer api.Close()
@@ -24,8 +24,13 @@ func TestAPIWorkflow(t *testing.T) {
 			w.WriteHeader(400)
 			return
 		}
+		call := calls.Add(1)
+		if call == 1 {
+			json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": Message{Role: "assistant", Content: `{"action":"say_hello"} {"action":"finish","answer":"未実行の回答"}`}, "finish_reason": "stop"}}})
+			return
+		}
 		d := Decision{Action: "say_hello"}
-		if calls.Add(1) > 1 {
+		if call > 2 {
 			last := req.Messages[len(req.Messages)-1].Content
 			if !strings.Contains(last, "Hello, World!") {
 				t.Errorf("missing real API observation: %s", last)
@@ -47,8 +52,8 @@ func TestAPIWorkflow(t *testing.T) {
 	if err := env.GetWorkflowResult(&result); err != nil || !strings.Contains(result, "Hello, World!") {
 		t.Fatalf("%q %v", result, err)
 	}
-	if calls.Load() != 2 {
-		t.Fatal("expected two LLM decisions")
+	if calls.Load() != 3 {
+		t.Fatal("expected three LLM calls including format correction")
 	}
 }
 
