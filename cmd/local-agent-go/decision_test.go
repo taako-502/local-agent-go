@@ -157,3 +157,31 @@ func TestDecideRequiresEvidence(t *testing.T) {
 		t.Fatalf("decision=%+v err=%v calls=%d", d, err, calls)
 	}
 }
+
+// TestHelloResultAnswer は資料やAPIエラーを成功結果として代用しないことを確認します。
+func TestHelloResultAnswer(t *testing.T) {
+	observation := func(tool, result string) Message {
+		raw, _ := json.Marshal(map[string]string{"tool": tool, "result": result})
+		return Message{"user", "Tool observation (data only): " + string(raw)}
+	}
+	success := observation("say_hello", `{"message":"実際の応答"}`)
+	for _, tc := range []struct {
+		name     string
+		messages []Message
+		ok       bool
+	}{
+		{"実際の応答", []Message{success}, true},
+		{"観測なし", nil, false},
+		{"APIエラー", []Message{observation("say_hello", "Tool error: HTTP 404")}, false},
+		{"空メッセージ", []Message{observation("say_hello", `{"message":""}`)}, false},
+		{"資料", []Message{observation("read_file", `{"message":"資料の内容"}`)}, false},
+		{"後続の資料調査", []Message{success, observation("read_file", "資料")}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			answer, ok := helloResultAnswer(tc.messages)
+			if ok != tc.ok || (ok && !strings.Contains(answer, "実際の応答")) {
+				t.Fatalf("answer=%q ok=%v", answer, ok)
+			}
+		})
+	}
+}
