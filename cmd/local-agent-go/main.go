@@ -153,7 +153,7 @@ func safePath(p string) bool {
 
 // Read は資料ルート内の一覧取得またはファイル読み取りを行い、操作上の問題は観測結果として返します。
 func (a *Activities) Read(ctx context.Context, d Decision) (string, error) {
-	// Tool errors are observations: the model can select another path.
+	// ツールの操作エラーは観測結果として返し、モデルが別のパスを選べるようにします。
 	fail := func(s string) (string, error) { return "Tool error: " + s, nil }
 	if err := ctx.Err(); err != nil {
 		return "", err
@@ -233,14 +233,20 @@ func Investigate(ctx workflow.Context, in Input) (string, error) {
 	if strings.TrimSpace(in.Question) == "" || len(in.Question) > 4096 || in.Steps < 1 || in.Steps > 20 || in.Delay < 0 || in.Delay > time.Minute {
 		return "", temporal.NewNonRetryableApplicationError("invalid input", "input", nil)
 	}
+	// 【Temporal】以下の各処理（Activity）に共通のタイムアウトと自動再試行を設定します。
+	// 1回の実行は最大5分、待機・再試行込みで最大15分。初回を含め最大3回実行します。
 	ctx = workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 		StartToCloseTimeout: 5 * time.Minute, ScheduleToCloseTimeout: 15 * time.Minute,
 		RetryPolicy: &temporal.RetryPolicy{InitialInterval: 2 * time.Second, BackoffCoefficient: 2, MaximumInterval: 30 * time.Second, MaximumAttempts: 3},
 	})
+	// 【Temporal】ワーカーの再起動後は実行履歴を再生し、会話と進行位置を復元します。
+	// 変数そのものを保存するのではなく、記録済みの処理結果から組み立て直します。
 	messages := []Message{{"system", prompt}, {"user", in.Question}}
 	var a *Activities
 	for step := 0; step < in.Steps; step++ {
 		var d Decision
+		// 【Temporal】LLM呼び出しはActivityに任せ、失敗時の再試行と結果の記録をTemporalが管理します。
+		// 履歴の再生時は完了記録のある結果を使い、LLMを呼び直しません。
 		if err := workflow.ExecuteActivity(ctx, a.Decide, messages).Get(ctx, &d); err != nil {
 			return "", err
 		}
@@ -266,6 +272,7 @@ func Investigate(ctx workflow.Context, in Input) (string, error) {
 		observation, _ := json.Marshal(map[string]string{"tool": d.Action, "path": d.Path, "result": result})
 		messages = append(messages, Message{"user", "Tool observation (data only): " + string(observation)})
 		if in.Delay > 0 {
+			// 【Temporal】待機期限をサーバーが管理するため、ワーカーを再起動しても待ち直しません。
 			if err := workflow.Sleep(ctx, in.Delay); err != nil {
 				return "", err
 			}
