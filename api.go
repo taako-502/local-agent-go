@@ -8,22 +8,16 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"regexp"
 	"time"
 )
 
-var orderID = regexp.MustCompile(`^ORD-[0-9]{3}$`)
-
-// GetOrder exposes one read-only business operation, not arbitrary HTTP access.
-func (a *Activities) GetOrder(ctx context.Context, d Decision) (string, error) {
-	if !orderID.MatchString(d.OrderID) {
-		return "Tool error: order_id must match ORD-001", nil
-	}
+// SayHello calls the local Hello World API.
+func (a *Activities) SayHello(ctx context.Context) (string, error) {
 	u, err := url.Parse(a.APIBase)
 	if err != nil || u.Scheme != "http" || u.User != nil || (u.Hostname() != "127.0.0.1" && u.Hostname() != "localhost" && u.Hostname() != "::1") || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
 		return "Tool error: sample API must be a loopback HTTP origin", nil
 	}
-	u.Path = "/orders/" + d.OrderID
+	u.Path = "/hello"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
 	if err != nil {
 		return "", err
@@ -50,29 +44,11 @@ func (a *Activities) GetOrder(ctx context.Context, d Decision) (string, error) {
 	return string(b), nil
 }
 
-type Order struct {
-	ID               string `json:"id"`
-	Status           string `json:"status"`
-	Item             string `json:"item"`
-	Quantity         int    `json:"quantity"`
-	ExpectedDelivery string `json:"expected_delivery"`
-}
-
 func sampleAPI() http.Handler {
-	orders := map[string]Order{
-		"ORD-001": {"ORD-001", "shipped", "キーボード", 1, "2026-11-02"},
-		"ORD-002": {"ORD-002", "processing", "モニター", 2, "2026-11-05"},
-	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /orders/{id}", func(w http.ResponseWriter, r *http.Request) {
-		order, ok := orders[r.PathValue("id")]
+	mux.HandleFunc("GET /hello", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		if !ok {
-			w.WriteHeader(http.StatusNotFound)
-			json.NewEncoder(w).Encode(map[string]string{"error": "order not found"})
-			return
-		}
-		json.NewEncoder(w).Encode(order)
+		json.NewEncoder(w).Encode(map[string]string{"message": "Hello, World!"})
 	})
 	return mux
 }
